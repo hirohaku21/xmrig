@@ -41,6 +41,7 @@ public:
     inline bool hasExtension(Extension) const noexcept override                     { return false; }
     inline bool isEnabled() const override                                          { return true; }
     inline bool isTLS() const override                                              { return false; }
+    inline bool isWSS() const override                                              { return false; }
     inline const char *mode() const override                                        { return "benchmark"; }
     inline const char *tlsFingerprint() const override                              { return nullptr; }
     inline const char *tlsVersion() const override                                  { return nullptr; }
@@ -90,7 +91,7 @@ private:
 
     bool setSeed(const char *seed);
     uint64_t referenceHash() const;
-    void printExit();
+    void printExit() const;
     void start();
 
 #   ifdef XMRIG_FEATURE_HTTP

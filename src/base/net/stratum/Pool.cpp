@@ -1,7 +1,7 @@
 /* XMRig
  * Copyright (c) 2019      Howard Chu  <https://github.com/hyc>
- * Copyright (c) 2018-2020 SChernykh   <https://github.com/SChernykh>
- * Copyright (c) 2016-2020 XMRig       <https://github.com/xmrig>, <support@xmrig.com>
+ * Copyright (c) 2018-2021 SChernykh   <https://github.com/SChernykh>
+ * Copyright (c) 2016-2021 XMRig       <https://github.com/xmrig>, <support@xmrig.com>
  *
  *   This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -17,7 +17,6 @@
  *   along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-
 #include <cassert>
 #include <cstring>
 #include <cstdlib>
@@ -32,7 +31,7 @@
 #include "base/kernel/Platform.h"
 #include "base/net/stratum/Client.h"
 
-#ifdef XMRIG_ALGO_KAWPOW
+#if defined XMRIG_ALGO_KAWPOW || defined XMRIG_ALGO_GHOSTRIDER
 #   include "base/net/stratum/AutoClient.h"
 #   include "base/net/stratum/EthStratumClient.h"
 #endif
@@ -66,6 +65,7 @@ const char *Pool::kAlgo                   = "algo";
 const char *Pool::kCoin                   = "coin";
 const char *Pool::kDaemon                 = "daemon";
 const char *Pool::kDaemonPollInterval     = "daemon-poll-interval";
+const char *Pool::kDaemonZMQPort          = "daemon-zmq-port";
 const char *Pool::kEnabled                = "enabled";
 const char *Pool::kFingerprint            = "tls-fingerprint";
 const char *Pool::kKeepalive              = "keepalive";
@@ -76,12 +76,14 @@ const char *Pool::kSelfSelect             = "self-select";
 const char *Pool::kSOCKS5                 = "socks5";
 const char *Pool::kSubmitToOrigin         = "submit-to-origin";
 const char *Pool::kTls                    = "tls";
+const char *Pool::kWSS                    = "wss";
 const char *Pool::kUrl                    = "url";
 const char *Pool::kUser                   = "user";
+const char *Pool::kSpendSecretKey         = "spend-secret-key";
 const char *Pool::kNicehashHost           = "nicehash.com";
 
 
-}
+} // namespace xmrig
 
 
 xmrig::Pool::Pool(const char *url) :
@@ -92,17 +94,19 @@ xmrig::Pool::Pool(const char *url) :
 }
 
 
-xmrig::Pool::Pool(const char *host, uint16_t port, const char *user, const char *password, int keepAlive, bool nicehash, bool tls, Mode mode) :
+xmrig::Pool::Pool(const char *host, uint16_t port, const char *user, const char *password, const char* spendSecretKey, int keepAlive, bool nicehash, bool tls, bool wss, Mode mode) :
     m_keepAlive(keepAlive),
     m_mode(mode),
     m_flags(1 << FLAG_ENABLED),
     m_password(password),
     m_user(user),
+    m_spendSecretKey(spendSecretKey),
     m_pollInterval(kDefaultPollInterval),
     m_url(host, port, tls)
 {
     m_flags.set(FLAG_NICEHASH, nicehash || strstr(host, kNicehashHost));
     m_flags.set(FLAG_TLS,      tls);
+    m_flags.set(FLAG_WSS,      wss);
 }
 
 
@@ -115,19 +119,22 @@ xmrig::Pool::Pool(const rapidjson::Value &object) :
         return;
     }
 
-    m_user         = Json::getString(object, kUser);
-    m_password     = Json::getString(object, kPass);
-    m_rigId        = Json::getString(object, kRigId);
-    m_fingerprint  = Json::getString(object, kFingerprint);
-    m_pollInterval = Json::getUint64(object, kDaemonPollInterval, kDefaultPollInterval);
-    m_algorithm    = Json::getString(object, kAlgo);
-    m_coin         = Json::getString(object, kCoin);
-    m_daemon       = Json::getString(object, kSelfSelect);
-    m_proxy        = Json::getValue(object, kSOCKS5);
+    m_user           = Json::getString(object, kUser);
+    m_spendSecretKey = Json::getString(object, kSpendSecretKey);
+    m_password       = Json::getString(object, kPass);
+    m_rigId          = Json::getString(object, kRigId);
+    m_fingerprint    = Json::getString(object, kFingerprint);
+    m_pollInterval   = Json::getUint64(object, kDaemonPollInterval, kDefaultPollInterval);
+    m_algorithm      = Json::getString(object, kAlgo);
+    m_coin           = Json::getString(object, kCoin);
+    m_daemon         = Json::getString(object, kSelfSelect);
+    m_proxy          = Json::getValue(object, kSOCKS5);
+    m_zmqPort        = Json::getInt(object, kDaemonZMQPort, m_zmqPort);
 
     m_flags.set(FLAG_ENABLED,  Json::getBool(object, kEnabled, true));
     m_flags.set(FLAG_NICEHASH, Json::getBool(object, kNicehash) || m_url.host().contains(kNicehashHost));
     m_flags.set(FLAG_TLS,      Json::getBool(object, kTls) || m_url.isTLS());
+    m_flags.set(FLAG_WSS,      Json::getBool(object, kWSS) || m_url.isWSS());
 
     setKeepAlive(Json::getValue(object, kKeepalive));
 
@@ -186,10 +193,6 @@ bool xmrig::Pool::isEnabled() const
     }
 #   endif
 
-    if (m_mode == MODE_DAEMON && (!algorithm().isValid() && !coin().isValid())) {
-        return false;
-    }
-
     return m_flags.test(FLAG_ENABLED) && isValid();
 }
 
@@ -218,8 +221,9 @@ xmrig::IClient *xmrig::Pool::createClient(int id, IClientListener *listener) con
     IClient *client = nullptr;
 
     if (m_mode == MODE_POOL) {
-#       ifdef XMRIG_ALGO_KAWPOW
-        if ((m_algorithm.family() == Algorithm::KAWPOW) || (m_coin == Coin::RAVEN)) {
+#       if defined XMRIG_ALGO_KAWPOW || defined XMRIG_ALGO_GHOSTRIDER
+        const uint32_t f = m_algorithm.family();
+        if ((f == Algorithm::KAWPOW) || (f == Algorithm::GHOSTRIDER) || (m_coin == Coin::RAVEN)) {
             client = new EthStratumClient(id, Platform::userAgent(), listener);
         }
         else
@@ -236,7 +240,7 @@ xmrig::IClient *xmrig::Pool::createClient(int id, IClientListener *listener) con
         client = new SelfSelectClient(id, Platform::userAgent(), listener, m_submitToOrigin);
     }
 #   endif
-#   ifdef XMRIG_ALGO_KAWPOW
+#   if defined XMRIG_ALGO_KAWPOW || defined XMRIG_ALGO_GHOSTRIDER
     else if (m_mode == MODE_AUTO_ETH) {
         client = new AutoClient(id, Platform::userAgent(), listener);
     }
@@ -270,6 +274,10 @@ rapidjson::Value xmrig::Pool::toJSON(rapidjson::Document &doc) const
     obj.AddMember(StringRef(kUrl),   url().toJSON(), allocator);
     obj.AddMember(StringRef(kUser),  m_user.toJSON(), allocator);
 
+    if (!m_spendSecretKey.isEmpty()) {
+        obj.AddMember(StringRef(kSpendSecretKey), m_spendSecretKey.toJSON(), allocator);
+    }
+
     if (m_mode != MODE_DAEMON) {
         obj.AddMember(StringRef(kPass),  m_password.toJSON(), allocator);
         obj.AddMember(StringRef(kRigId), m_rigId.toJSON(), allocator);
@@ -288,12 +296,14 @@ rapidjson::Value xmrig::Pool::toJSON(rapidjson::Document &doc) const
 
     obj.AddMember(StringRef(kEnabled),      m_flags.test(FLAG_ENABLED), allocator);
     obj.AddMember(StringRef(kTls),          isTLS(), allocator);
+    obj.AddMember(StringRef(kWSS),          isWSS(), allocator);
     obj.AddMember(StringRef(kFingerprint),  m_fingerprint.toJSON(), allocator);
     obj.AddMember(StringRef(kDaemon),       m_mode == MODE_DAEMON, allocator);
     obj.AddMember(StringRef(kSOCKS5),       m_proxy.toJSON(doc), allocator);
 
     if (m_mode == MODE_DAEMON) {
         obj.AddMember(StringRef(kDaemonPollInterval), m_pollInterval, allocator);
+        obj.AddMember(StringRef(kDaemonZMQPort), m_zmqPort, allocator);
     }
     else {
         obj.AddMember(StringRef(kSelfSelect),     m_daemon.url().toJSON(), allocator);
@@ -312,7 +322,7 @@ std::string xmrig::Pool::printableName() const
         out += std::string(" coin ") + WHITE_BOLD_S + m_coin.name() + CLEAR;
     }
     else {
-        out += std::string(" algo ") + WHITE_BOLD_S + (m_algorithm.isValid() ? m_algorithm.shortName() : "auto") + CLEAR;
+        out += std::string(" algo ") + WHITE_BOLD_S + (m_algorithm.isValid() ? m_algorithm.name() : "auto") + CLEAR;
     }
 
     if (m_mode == MODE_SELF_SELECT) {
@@ -329,6 +339,9 @@ void xmrig::Pool::print() const
     LOG_NOTICE("url:       %s", url().data());
     LOG_DEBUG ("host:      %s", host().data());
     LOG_DEBUG ("port:      %d", static_cast<int>(port()));
+    if (m_zmqPort >= 0) {
+        LOG_DEBUG("zmq-port:  %d", m_zmqPort);
+    }
     LOG_DEBUG ("user:      %s", m_user.data());
     LOG_DEBUG ("pass:      %s", m_password.data());
     LOG_DEBUG ("rig-id     %s", m_rigId.data());

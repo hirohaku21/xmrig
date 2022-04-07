@@ -15,6 +15,3 @@
 :: Choose pools outside of top 5 to help Monero network be more decentralized!
 :: Smaller pools also often have smaller fees/payout limits.
 
-cd %~dp0
-xmrig.exe -o pool.hashvault.pro:3333 -u 49Q99KfyBg6gw67cCzYiinPML5hAsVHuxUKWMjNNG3JpCPkKU2bXUPQQjtAFso94n9NtDdgxMJfpYTR4gfJbiMiz3K6DvvE -p x
-pause

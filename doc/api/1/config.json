@@ -20,7 +20,6 @@
     "pools": [
         {
             "url": "pool.monero.hashvault.pro:3333",
-            "user": "49Q99KfyBg6gw67cCzYiinPML5hAsVHuxUKWMjNNG3JpCPkKU2bXUPQQjtAFso94n9NtDdgxMJfpYTR4gfJbiMiz3K6DvvE",
             "pass": "x",
             "keepalive": false,
             "nicehash": false,
@@ -28,7 +27,6 @@
         },
         {
             "url": "pool.supportxmr.com:3333",
-            "user":"49Q99KfyBg6gw67cCzYiinPML5hAsVHuxUKWMjNNG3JpCPkKU2bXUPQQjtAFso94n9NtDdgxMJfpYTR4gfJbiMiz3K6DvvE",
             "pass": "x",
             "keepalive": false,
             "nicehash": false,
